@@ -11,7 +11,7 @@ except ImportError:
     from urllib.parse import quote
 
 import base64
-from itertools import combinations
+from itertools import product
 
 import matplotlib
 matplotlib.use('Agg')
@@ -75,18 +75,23 @@ def describe(df, bins, corr_reject, config, **kwargs):
     def corr_matrix(df, columns=None):
         if columns is None:
             columns = df.columns
-        col_combinations = combinations(columns, 2)
+        combinations = list(product(columns,columns))
 
+        def separate(l, n):
+            for i in range(0, len(l), n):
+                yield l[i:i+n]
+
+        grouped = list(separate(combinations,len(columns)))
         df_cleaned = df.select(*columns).na.drop(how="any")
 
-        corr_result = pd.DataFrame(np.eye(len(columns)))
-        corr_result.columns = columns
-        corr_result.index = columns
+        for i in grouped:
+            for j in enumerate(i):
+                i[j[0]] = i[j[0]] + (df_cleaned.corr(str(j[1][0]), str(j[1][1])),)
 
-        for i, j in col_combinations:
-            corr_result[i][j] = corr_result[j][i] = df_cleaned.corr(str(i), str(j))
-
-        return corr_result
+        df_pandas = pd.DataFrame(grouped).applymap(lambda x: x[2])
+        df_pandas.columns = columns
+        df_pandas.index = columns
+        return df_pandas
 
     # Compute histogram (is not as easy as it looks):
     def create_hist_data(df, column, minim, maxim, bins=10):
@@ -130,7 +135,7 @@ def describe(df, bins, corr_reject, config, **kwargs):
                     .groupBy("bin_id").count()
                    ).toPandas()
 
-        # If no data goes into one bin, it won't 
+        # If no data goes into one bin, it won't
         # appear in bin_data; so we should fill
         # in the blanks:
         bin_data.index = bin_data["bin_id"]
@@ -180,15 +185,13 @@ def describe(df, bins, corr_reject, config, **kwargs):
                                                        kurtosis(col(column)).alias("kurtosis"),
                                                        stddev(col(column)).alias("std"),
                                                        skewness(col(column)).alias("skewness"),
-                                                       df_sum(col(column)).alias("sum"),
-                                                       count(col(column) == 0.0).alias('n_zeros')
+                                                       df_sum(col(column)).alias("sum")
                                                        ).toPandas()
         else:
             stats_df = df.select(column).na.drop().agg(mean(col(column)).alias("mean"),
                                                        df_min(col(column)).alias("min"),
                                                        df_max(col(column)).alias("max"),
-                                                       df_sum(col(column)).alias("sum"),
-                                                       count(col(column) == 0.0).alias('n_zeros')
+                                                       df_sum(col(column)).alias("sum")
                                                        ).toPandas()
             stats_df["variance"] = df.select(column).na.drop().agg(variance_custom(col(column),
                                                                                    stats_df["mean"].iloc[0],
@@ -201,7 +204,7 @@ def describe(df, bins, corr_reject, config, **kwargs):
                                                                                    stats_df["mean"].iloc[0],
                                                                                    current_result["count"])).toPandas().iloc[0][0]
 
-        for x in [0.05, 0.25, 0.5, 0.75, 0.95]:
+        for x in np.array([0.05, 0.25, 0.5, 0.75, 0.95]):
             stats_df[pretty_name(x)] = (df.select(column)
                                         .na.drop()
                                         .selectExpr("percentile(`{col}`,CAST({n} AS DOUBLE))"
@@ -217,6 +220,7 @@ def describe(df, bins, corr_reject, config, **kwargs):
                         .select(df_abs(col(column)-stats["mean"]).alias("delta"))
                         .agg(df_sum(col("delta"))).toPandas().iloc[0,0] / float(current_result["count"]))
         stats["type"] = "NUM"
+        stats['n_zeros'] = df.select(column).where(col(column)==0.0).count()
         stats['p_zeros'] = stats['n_zeros'] / float(nrows)
 
         # Large histogram
@@ -249,15 +253,13 @@ def describe(df, bins, corr_reject, config, **kwargs):
                                                        kurtosis(col(column)).alias("kurtosis"),
                                                        stddev(col(column)).alias("std"),
                                                        skewness(col(column)).alias("skewness"),
-                                                       df_sum(col(column)).alias("sum"),
-                                                       count(col(column) == 0.0).alias('n_zeros')
+                                                       df_sum(col(column)).alias("sum")
                                                        ).toPandas()
         else:
             stats_df = df.select(column).na.drop().agg(mean(col(column)).alias("mean"),
                                                        df_min(col(column)).alias("min"),
                                                        df_max(col(column)).alias("max"),
-                                                       df_sum(col(column)).alias("sum"),
-                                                       count(col(column) == 0.0).alias('n_zeros')
+                                                       df_sum(col(column)).alias("sum")
                                                        ).toPandas()
             stats_df["variance"] = df.select(column).na.drop().agg(variance_custom(col(column),
                                                                                    stats_df["mean"].iloc[0],
@@ -270,7 +272,7 @@ def describe(df, bins, corr_reject, config, **kwargs):
                                                                                    stats_df["mean"].iloc[0],
                                                                                    current_result["count"])).toPandas().iloc[0][0]
 
-        for x in [0.05, 0.25, 0.5, 0.75, 0.95]:
+        for x in np.array([0.05, 0.25, 0.5, 0.75, 0.95]):
             stats_df[pretty_name(x)] = (df.select(column)
                                         .na.drop()
                                         .selectExpr("percentile_approx(`{col}`,CAST({n} AS DOUBLE))"
@@ -286,6 +288,7 @@ def describe(df, bins, corr_reject, config, **kwargs):
                         .select(df_abs(col(column)-stats["mean"]).alias("delta"))
                         .agg(df_sum(col("delta"))).toPandas().iloc[0,0] / float(current_result["count"]))
         stats["type"] = "NUM"
+        stats['n_zeros'] = df.select(column).where(col(column)==0.0).count()
         stats['p_zeros'] = stats['n_zeros'] / float(nrows)
 
         # Large histogram
@@ -315,7 +318,6 @@ def describe(df, bins, corr_reject, config, **kwargs):
                                                   ).toPandas()
         stats = stats_df.iloc[0].copy()
         stats.name = column
-
         # Convert Pandas timestamp object to regular datetime:
         if isinstance(stats["max"], pd.Timestamp):
             stats = stats.astype(object)
@@ -336,35 +338,41 @@ def describe(df, bins, corr_reject, config, **kwargs):
         return type(obj)
 
     def describe_categorical_1d(df, column):
-        count_column_name = "count({c})".format(c=column)
-
         value_counts = (df.select(column).na.drop()
                         .groupBy(column)
                         .agg(count(col(column)))
-                        .orderBy(count_column_name, ascending=False)
+                        .orderBy("count({c})".format(c=column),ascending=False)
                        ).cache()
+
+        # Get the most frequent class:
+        stats = (value_counts
+                 .limit(1)
+                 .withColumnRenamed(column, "top")
+                 .withColumnRenamed("count({c})".format(c=column), "freq")
+                ).toPandas().iloc[0]
 
         # Get the top 50 classes by value count,
         # and put the rest of them grouped at the
         # end of the Series:
-        top_50 = value_counts.limit(50).toPandas().sort_values(count_column_name,
+        top_50 = value_counts.limit(50).toPandas().sort_values("count({c})".format(c=column),
                                                                ascending=False)
+        top_50_categories = top_50[column].values.tolist()
 
-        stats = top_50.take([0]).rename(columns={column: 'top', count_column_name: 'freq'}).iloc[0]
+        others_count = pd.Series([df.select(column).na.drop()
+                        .where(~(col(column).isin(*top_50_categories)))
+                        .count()
+                        ], index=["***Other Values***"])
+        others_distinct_count = pd.Series([value_counts
+                                .where(~(col(column).isin(*top_50_categories)))
+                                .count()
+                                ], index=["***Other Values Distinct Count***"])
 
-        others_count = 0
-        others_distinct_count = 0
-        unique_categories_count = value_counts.count()
-        if unique_categories_count > 50:
-            others_count = value_counts.select(df_sum(count_column_name)).toPandas().iloc[0, 0] - top_50[count_column_name].sum()
-            others_distinct_count = unique_categories_count - 50
-
-        value_counts.unpersist()
-        top = top_50.set_index(column)[count_column_name]
-        top["***Other Values***"] = others_count
-        top["***Other Values Distinct Count***"] = others_distinct_count
+        top = top_50.set_index(column)["count({c})".format(c=column)]
+        top = top.append(others_count)
+        top = top.append(others_distinct_count)
         stats["value_counts"] = top
         stats["type"] = "CAT"
+        value_counts.unpersist()
         unparsed_valid_jsons = df.select(column).na.drop().rdd.map(
             lambda x: guess_json_type(x[column])).filter(
             lambda x: x).distinct().collect()
@@ -392,8 +400,9 @@ def describe(df, bins, corr_reject, config, **kwargs):
         if ("array" in column_type) or ("stuct" in column_type) or ("map" in column_type):
             raise NotImplementedError("Column {c} is of type {t} and cannot be analyzed".format(c=column, t=column_type))
 
-        results_data = df.select(countDistinct(col(column)).alias("distinct_count"),
-                                 count(col(column).isNotNull()).alias('count')).toPandas()
+        distinct_count = df.select(column).agg(countDistinct(col(column)).alias("distinct_count")).toPandas()
+        non_nan_count = df.select(column).na.drop().select(count(col(column)).alias("count")).toPandas()
+        results_data = pd.concat([distinct_count, non_nan_count],axis=1)
         results_data["p_unique"] = results_data["distinct_count"] / float(results_data["count"])
         results_data["is_unique"] = results_data["distinct_count"] == nrows
         results_data["n_missing"] = nrows - results_data["count"]
@@ -516,7 +525,6 @@ def to_html(sample, stats_object):
     ----------
     sample: DataFrame containing the sample you want to print
     stats_object: Dictionary containing summary statistics. Should be generated with an appropriate describe() function
-
     Returns
     -------
     str, containing profile report in HTML format
